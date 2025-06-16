@@ -57,7 +57,7 @@ uart_core uart_inst (
 endmodule
 
 // Code your design here
-module uart (
+module uart_core (
     input clk,             // Reloj del sistema
     input rst,             // Reset activo en alto
     // Configuración
