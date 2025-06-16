@@ -18,7 +18,7 @@ module tt_um_uart (
 // ================================================
 // Reset conversion and signal mapping
 // ================================================
-wire rst = ~rst_n;  // Convert to active-high reset
+wire rst = ~rst_n;
 wire rx_in = ui_in[0];
 wire tx_start = ui_in[1];
 wire baud16_en = ui_in[2];
@@ -33,14 +33,14 @@ wire rx_ready;
 wire rx_error;
 
 // Output assignments
-assign uo_out[0] = tx_out;    // Serial output
-assign uo_out[1] = tx_busy;   // Transmitter busy
-assign uo_out[2] = rx_ready;  // Data ready pulse
-assign uo_out[3] = rx_error;  // Error indicator
-assign uo_out[7:4] = 4'b0;    // Unused outputs
+assign uo_out[0] = tx_out;
+assign uo_out[1] = tx_busy;
+assign uo_out[2] = rx_ready;
+assign uo_out[3] = rx_error;
+assign uo_out[7:4] = 4'b0;
 
-assign uio_out = 8'b0;        // Not used - fix GDS issue
-assign uio_oe = 8'h00;        // Always input mode
+assign uio_out = 8'b0;
+assign uio_oe = 8'h00;
 
 // ================================================
 // UART Core Implementation
@@ -77,21 +77,20 @@ module uart_core (
     input baud16_en
 );
 
-// Estados del transmisor
+// States
 localparam TX_IDLE     = 0;
 localparam TX_START    = 1;
 localparam TX_DATA     = 2;
 localparam TX_PARITY   = 3;
 localparam TX_STOP     = 4;
 
-// Estados del receptor
 localparam RX_IDLE     = 0;
 localparam START_CHECK = 1;
 localparam RX_DATA     = 2;
 localparam RX_PARITY   = 3;
 localparam RX_STOP     = 4;
 
-// Registros del transmisor
+// Registers
 reg [2:0] tx_state;
 reg [4:0] tx_cycle_count;
 reg [2:0] tx_bit_count;
@@ -101,7 +100,6 @@ reg [4:0] tx_stop_duration;
 reg tx_out_reg;
 reg tx_busy_reg;
 
-// Registros del receptor
 reg [2:0] rx_state;
 reg [4:0] rx_cycle_count;
 reg [2:0] rx_bit_count;
@@ -113,14 +111,14 @@ reg [7:0] rx_data_reg;
 reg rx_ready_reg;
 reg rx_error_reg;
 
-// Asignaciones de salida
+// Output assignments
 assign tx_busy = tx_busy_reg;
 assign tx_out = tx_out_reg;
 assign rx_data = rx_data_reg;
 assign rx_ready = rx_ready_reg;
 assign rx_error = rx_error_reg;
 
-// Lógica del transmisor
+// Transmitter FSM
 always @(posedge clk or posedge rst) begin
     if (rst) begin
         tx_state <= TX_IDLE;
@@ -128,6 +126,9 @@ always @(posedge clk or posedge rst) begin
         tx_cycle_count <= 0;
         tx_bit_count <= 0;
         tx_busy_reg <= 0;
+        tx_shift_reg <= 8'b0;          // Reset added
+        tx_parity_bit <= 0;            // Reset added
+        tx_stop_duration <= 16;        // Reset added
     end else begin
         tx_busy_reg <= (tx_state != TX_IDLE);
         
@@ -135,14 +136,11 @@ always @(posedge clk or posedge rst) begin
             TX_IDLE: begin
                 tx_out_reg <= 1'b1;
                 if (tx_start) begin
-                    tx_stop_duration <= (ctrl_word[4]) ? 
-                        ((ctrl_word[1:0] == 2'b11) ? 24 : 32) : 16;
+                    // FIX: Stop bit duration depends ONLY on ctrl_word[4]
+                    tx_stop_duration <= (ctrl_word[4]) ? 32 : 16;
                     
                     if (~ctrl_word[3]) begin
-                        if (ctrl_word[2])
-                            tx_parity_bit <= ^tx_data;
-                        else
-                            tx_parity_bit <= ~^tx_data;
+                        tx_parity_bit <= ctrl_word[2] ? ^tx_data : ~^tx_data;
                     end
                     
                     tx_shift_reg <= tx_data;
@@ -153,14 +151,12 @@ always @(posedge clk or posedge rst) begin
             
             TX_START: begin
                 tx_out_reg <= 1'b0;
-                if (baud16_en) begin
-                    if (tx_cycle_count < 15)
-                        tx_cycle_count <= tx_cycle_count + 1;
-                    else begin
-                        tx_cycle_count <= 0;
-                        tx_state <= TX_DATA;
-                        tx_bit_count <= 0;
-                    end
+                if (baud16_en && tx_cycle_count < 15) begin
+                    tx_cycle_count <= tx_cycle_count + 1;
+                end else if (baud16_en) begin
+                    tx_cycle_count <= 0;
+                    tx_state <= TX_DATA;
+                    tx_bit_count <= 0;
                 end
             end
             
@@ -175,10 +171,7 @@ always @(posedge clk or posedge rst) begin
                         tx_bit_count <= tx_bit_count + 1;
                         
                         if (tx_bit_count == (ctrl_word[1:0] + 4)) begin
-                            if (~ctrl_word[3])
-                                tx_state <= TX_PARITY;
-                            else
-                                tx_state <= TX_STOP;
+                            tx_state <= ctrl_word[3] ? TX_STOP : TX_PARITY;
                         end
                     end
                 end
@@ -186,32 +179,28 @@ always @(posedge clk or posedge rst) begin
             
             TX_PARITY: begin
                 tx_out_reg <= tx_parity_bit;
-                if (baud16_en) begin
-                    if (tx_cycle_count < 15)
-                        tx_cycle_count <= tx_cycle_count + 1;
-                    else begin
-                        tx_cycle_count <= 0;
-                        tx_state <= TX_STOP;
-                    end
+                if (baud16_en && tx_cycle_count < 15) begin
+                    tx_cycle_count <= tx_cycle_count + 1;
+                end else if (baud16_en) begin
+                    tx_cycle_count <= 0;
+                    tx_state <= TX_STOP;
                 end
             end
             
             TX_STOP: begin
                 tx_out_reg <= 1'b1;
-                if (baud16_en) begin
-                    if (tx_cycle_count < tx_stop_duration - 1)
-                        tx_cycle_count <= tx_cycle_count + 1;
-                    else begin
-                        tx_cycle_count <= 0;
-                        tx_state <= TX_IDLE;
-                    end
+                if (baud16_en && (tx_cycle_count < tx_stop_duration - 1)) begin
+                    tx_cycle_count <= tx_cycle_count + 1;
+                end else if (baud16_en) begin
+                    tx_cycle_count <= 0;
+                    tx_state <= TX_IDLE;
                 end
             end
         endcase
     end
 end
 
-// Lógica del receptor
+// Receiver FSM
 always @(posedge clk or posedge rst) begin
     if (rst) begin
         rx_state <= RX_IDLE;
@@ -223,6 +212,7 @@ always @(posedge clk or posedge rst) begin
         parity_error <= 0;
         rx_error_reg <= 0;
         rx_data_reg <= 0;
+        rx_shift_reg <= 8'b0;          // Reset added
     end else begin
         rx_ready_reg <= 0;
         rx_error_reg <= 0;
@@ -241,13 +231,9 @@ always @(posedge clk or posedge rst) begin
                     if (rx_cycle_count > 0) begin
                         rx_cycle_count <= rx_cycle_count - 1;
                     end else begin
-                        if (!rx_in) begin
-                            rx_state <= RX_DATA;
-                            rx_cycle_count <= 0;
-                            rx_bit_count <= 0;
-                        end else begin
-                            rx_state <= RX_IDLE;
-                        end
+                        rx_state <= !rx_in ? RX_DATA : RX_IDLE;
+                        rx_cycle_count <= 0;
+                        rx_bit_count <= 0;
                     end
                 end
             end
@@ -256,8 +242,9 @@ always @(posedge clk or posedge rst) begin
                 if (baud16_en) begin
                     rx_cycle_count <= rx_cycle_count + 1;
                     
+                    // FIX: Left-shift for correct byte alignment
                     if (rx_cycle_count == 8) begin
-                        rx_shift_reg <= {rx_in, rx_shift_reg[7:1]};
+                        rx_shift_reg <= {rx_shift_reg[6:0], rx_in};
                     end
                     
                     if (rx_cycle_count == 15) begin
@@ -265,10 +252,7 @@ always @(posedge clk or posedge rst) begin
                         rx_bit_count <= rx_bit_count + 1;
                         
                         if (rx_bit_count == (ctrl_word[1:0] + 4)) begin
-                            if (~ctrl_word[3])
-                                rx_state <= RX_PARITY;
-                            else
-                                rx_state <= RX_STOP;
+                            rx_state <= ctrl_word[3] ? RX_STOP : RX_PARITY;
                         end
                     end
                 end
@@ -279,12 +263,12 @@ always @(posedge clk or posedge rst) begin
                     rx_cycle_count <= rx_cycle_count + 1;
                     
                     if (rx_cycle_count == 8) begin
-                        if (ctrl_word[2]) begin
-                            if (^rx_shift_reg != rx_in) 
-                                parity_error <= 1;
-                        end else begin
-                            if (~^rx_shift_reg != rx_in)
-                                parity_error <= 1;
+                        if (~ctrl_word[3]) begin // Parity enabled
+                            if (ctrl_word[2]) begin // Even parity
+                                parity_error <= (^rx_shift_reg != rx_in);
+                            end else begin       // Odd parity
+                                parity_error <= (~^rx_shift_reg != rx_in);
+                            end
                         end
                     end
                     
@@ -300,8 +284,7 @@ always @(posedge clk or posedge rst) begin
                     rx_cycle_count <= rx_cycle_count + 1;
                     
                     if (rx_cycle_count == 8) begin
-                        if (!rx_in)
-                            frame_error <= 1;
+                        frame_error <= !rx_in; // Stop bit should be high
                     end
                     
                     if (rx_cycle_count == 15) begin
@@ -319,4 +302,3 @@ always @(posedge clk or posedge rst) begin
 end
 
 endmodule
-
