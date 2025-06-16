@@ -1,75 +1,61 @@
-/*
- * Copyright (c) 2024 Your Name
- * SPDX-License-Identifier: Apache-2.0
- */
-
-`default_nettype none
-// Top module for Tiny Tapeout
 module tt_um_uart (
-    input  wire [7:0] ui,      // Dedicated inputs
-    input  wire [7:0] uio_in,  // IOs: Input path
-    output wire [7:0] uo,      // Dedicated outputs
-    output wire [7:0] uio_out, // IOs: Output path
-    output wire [7:0] uio_oe,  // IOs: Enable path
-    input  wire       clk,      // clock
-    input  wire       rst_n     // reset_n - active low
+    input  wire [7:0] ui_in,    // Dedicated inputs
+    output wire [7:0] uo_out,   // Dedicated outputs
+    input  wire [7:0] uio_in,   // IOs: Input path
+    output wire [7:0] uio_out,  // IOs: Output path
+    output wire [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
+    input  wire       ena,      // Enable (ignored)
+    input  wire       clk,      // Clock
+    input  wire       rst_n     // Reset active low
 );
 
-    // ================================================
-    // Señales y conversión de reset
-    // ================================================
-    wire rst = ~rst_n;  // Convertir reset a activo alto
-    reg [7:0] tx_data_reg; // Registro para datos de transmisión
-    
-    // Señales de control
-    wire [4:0] ctrl_word = {ui[7], ui[6], ui[5], ui[4], ui[3]};
-    
-    // Señales internas del UART
-    wire tx_busy, tx_out, rx_ready, rx_error;
-    wire [7:0] rx_data;
-    
-    // ================================================
-    // Lógica para capturar datos de transmisión
-    // ================================================
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            tx_data_reg <= 8'h00;
-        end else if (ui[1] && !tx_busy) begin // Capturar en tx_start cuando no está ocupado
-            tx_data_reg <= uio_in;
-        end
-    end
+// ================================================
+// Reset conversion and signal mapping
+// ================================================
+wire rst = ~rst_n;  // Convert to active-high reset
+wire rx_in = ui_in[0];
+wire tx_start = ui_in[1];
+wire baud16_en = ui_in[2];
+wire [4:0] ctrl_word = ui_in[7:3];
+wire [7:0] tx_data = uio_in;
 
-    // ================================================
-    // Instancia del módulo UART
-    // ================================================
-    uart uart_instance (
-        .clk(clk),
-        .rst(rst),
-        .ctrl_word(ctrl_word),
-        .tx_data(tx_data_reg),
-        .tx_start(ui[1]),
-        .tx_busy(tx_busy),
-        .tx_out(tx_out),
-        .rx_in(ui[0]),
-        .rx_data(rx_data),
-        .rx_ready(rx_ready),
-        .rx_error(rx_error),
-        .baud16_en(ui[2])
-    );
+// Internal signals
+wire tx_out;
+wire tx_busy;
+wire [7:0] rx_data;
+wire rx_ready;
+wire rx_error;
 
-    // ================================================
-    // Asignación de salidas
-    // ================================================
-    assign uo[0] = tx_out;     // TX_OUT
-    assign uo[1] = tx_busy;    // TX_BUSY
-    assign uo[2] = rx_ready;   // RX_READY
-    assign uo[3] = rx_error;   // RX_ERROR
-    assign uo[7:4] = 4'b0;     // Pines no utilizados
-    
-    assign uio_out = rx_data;   // Datos recibidos
-    assign uio_oe = (rx_ready) ? 8'hFF : 8'h00; // Habilitar salida solo cuando hay dato válido
+// Output assignments
+assign uo_out[0] = tx_out;    // Serial output
+assign uo_out[1] = tx_busy;   // Transmitter busy
+assign uo_out[2] = rx_ready;  // Data ready pulse
+assign uo_out[3] = rx_error;  // Error indicator
+assign uo_out[7:4] = 4'b0;    // Unused outputs
+
+assign uio_out = 8'b0;        // Not used - fix GDS issue
+assign uio_oe = 8'h00;        // Always input mode
+
+// ================================================
+// UART Core Implementation
+// ================================================
+uart_core uart_inst (
+    .clk(clk),
+    .rst(rst),
+    .ctrl_word(ctrl_word),
+    .tx_data(tx_data),
+    .tx_start(tx_start),
+    .tx_busy(tx_busy),
+    .tx_out(tx_out),
+    .rx_in(rx_in),
+    .rx_data(rx_data),
+    .rx_ready(rx_ready),
+    .rx_error(rx_error),
+    .baud16_en(baud16_en)
+);
 
 endmodule
+
 // Code your design here
 module uart (
     input clk,             // Reloj del sistema
