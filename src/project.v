@@ -4,93 +4,110 @@
  */
 
 `default_nettype none
+// Top module for Tiny Tapeout
 module tt_um_uart (
-    input  wire [7:0] ui_in,    // Dedicated inputs
-    output wire [7:0] uo_out,   // Dedicated outputs
-    input  wire [7:0] uio_in,   // IOs: Input path
-    output wire [7:0] uio_out,  // IOs: Output path
-    output wire [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
-    input  wire       ena,      // Enable (ignored)
-    input  wire       clk,      // Clock
-    input  wire       rst_n     // Reset active low
+    input  wire [7:0] ui,      // Dedicated inputs
+    input  wire [7:0] uio_in,  // IOs: Input path
+    output wire [7:0] uo,      // Dedicated outputs
+    output wire [7:0] uio_out, // IOs: Output path
+    output wire [7:0] uio_oe,  // IOs: Enable path
+    input  wire       clk,      // clock
+    input  wire       rst_n     // reset_n - active low
 );
 
-// ================================================
-// Reset conversion and signal mapping
-// ================================================
-wire rst = ~rst_n;
-wire rx_in = ui_in[0];
-wire tx_start = ui_in[1];
-wire baud16_en = ui_in[2];
-wire [4:0] ctrl_word = ui_in[7:3];
-wire [7:0] tx_data = uio_in;
+    // ================================================
+    // Señales y conversión de reset
+    // ================================================
+    wire rst = ~rst_n;  // Convertir reset a activo alto
+    reg [7:0] tx_data_reg; // Registro para datos de transmisión
+    
+    // Señales de control
+    wire [4:0] ctrl_word = {ui[7], ui[6], ui[5], ui[4], ui[3]};
+    
+    // Señales internas del UART
+    wire tx_busy, tx_out, rx_ready, rx_error;
+    wire [7:0] rx_data;
+    
+    // ================================================
+    // Lógica para capturar datos de transmisión
+    // ================================================
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            tx_data_reg <= 8'h00;
+        end else if (ui[1] && !tx_busy) begin // Capturar en tx_start cuando no está ocupado
+            tx_data_reg <= uio_in;
+        end
+    end
 
-// Internal signals
-wire tx_out;
-wire tx_busy;
-wire [7:0] rx_data;
-wire rx_ready;
-wire rx_error;
+    // ================================================
+    // Instancia del módulo UART
+    // ================================================
+    uart uart_instance (
+        .clk(clk),
+        .rst(rst),
+        .ctrl_word(ctrl_word),
+        .tx_data(tx_data_reg),
+        .tx_start(ui[1]),
+        .tx_busy(tx_busy),
+        .tx_out(tx_out),
+        .rx_in(ui[0]),
+        .rx_data(rx_data),
+        .rx_ready(rx_ready),
+        .rx_error(rx_error),
+        .baud16_en(ui[2])
+    );
 
-// Output assignments
-assign uo_out[0] = tx_out;
-assign uo_out[1] = tx_busy;
-assign uo_out[2] = rx_ready;
-assign uo_out[3] = rx_error;
-assign uo_out[7:4] = 4'b0;
-
-assign uio_out = 8'b0;
-assign uio_oe = 8'h00;
-
-// ================================================
-// UART Core Implementation
-// ================================================
-uart_core uart_inst (
-    .clk(clk),
-    .rst(rst),
-    .ctrl_word(ctrl_word),
-    .tx_data(tx_data),
-    .tx_start(tx_start),
-    .tx_busy(tx_busy),
-    .tx_out(tx_out),
-    .rx_in(rx_in),
-    .rx_data(rx_data),
-    .rx_ready(rx_ready),
-    .rx_error(rx_error),
-    .baud16_en(baud16_en)
-);
+    // ================================================
+    // Asignación de salidas
+    // ================================================
+    assign uo[0] = tx_out;     // TX_OUT
+    assign uo[1] = tx_busy;    // TX_BUSY
+    assign uo[2] = rx_ready;   // RX_READY
+    assign uo[3] = rx_error;   // RX_ERROR
+    assign uo[7:4] = 4'b0;     // Pines no utilizados
+    
+    assign uio_out = rx_data;   // Datos recibidos
+    assign uio_oe = (rx_ready) ? 8'hFF : 8'h00; // Habilitar salida solo cuando hay dato válido
 
 endmodule
-
-module uart_core (
-    input clk,
-    input rst,
-    input [4:0] ctrl_word,
-    input [7:0] tx_data,
-    input tx_start,
-    output tx_busy,
-    output tx_out,
-    input rx_in,
-    output [7:0] rx_data,
-    output rx_ready,
-    output rx_error,
-    input baud16_en
+// Code your design here
+module uart (
+    input clk,             // Reloj del sistema
+    input rst,             // Reset activo en alto
+    // Configuración
+    input [4:0] ctrl_word, // {NSB, NPB, POE, NDB2, NDB1}
+    // Interfaz de transmisión
+    input [7:0] tx_data,   // Datos a transmitir
+    input tx_start,        // Iniciar transmisión (activo alto)
+    output tx_busy,        // Transmisor ocupado
+    output tx_out,         // Salida serie
+    // Interfaz de recepción
+    input rx_in,           // Entrada serie
+    output [7:0] rx_data,  // Datos recibidos
+    output rx_ready,       // Dato recibido disponible (pulso)
+    output rx_error,       // Error (paridad/trama)
+    // Control de baud rate
+    input baud16_en        // Enable 16x baud rate (pulso)
 );
 
-// States
+// ================================================
+// Parámetros y registros internos
+// ================================================
+// Estados del transmisor
 localparam TX_IDLE     = 0;
 localparam TX_START    = 1;
 localparam TX_DATA     = 2;
 localparam TX_PARITY   = 3;
 localparam TX_STOP     = 4;
 
+// Estados del receptor
 localparam RX_IDLE     = 0;
 localparam START_CHECK = 1;
 localparam RX_DATA     = 2;
 localparam RX_PARITY   = 3;
 localparam RX_STOP     = 4;
 
-// Registers
+// Registros del transmisor
 reg [2:0] tx_state;
 reg [4:0] tx_cycle_count;
 reg [2:0] tx_bit_count;
@@ -98,8 +115,8 @@ reg [7:0] tx_shift_reg;
 reg tx_parity_bit;
 reg [4:0] tx_stop_duration;
 reg tx_out_reg;
-reg tx_busy_reg;
 
+// Registros del receptor
 reg [2:0] rx_state;
 reg [4:0] rx_cycle_count;
 reg [2:0] rx_bit_count;
@@ -109,38 +126,31 @@ reg frame_error;
 reg parity_error;
 reg [7:0] rx_data_reg;
 reg rx_ready_reg;
-reg rx_error_reg;
 
-// Output assignments
-assign tx_busy = tx_busy_reg;
-assign tx_out = tx_out_reg;
-assign rx_data = rx_data_reg;
-assign rx_ready = rx_ready_reg;
-assign rx_error = rx_error_reg;
-
-// Transmitter FSM
+// ================================================
+// Lógica del transmisor
+// ================================================
 always @(posedge clk or posedge rst) begin
     if (rst) begin
         tx_state <= TX_IDLE;
         tx_out_reg <= 1'b1;
         tx_cycle_count <= 0;
         tx_bit_count <= 0;
-        tx_busy_reg <= 0;
-        tx_shift_reg <= 8'b0;          // Reset added
-        tx_parity_bit <= 0;            // Reset added
-        tx_stop_duration <= 16;        // Reset added
     end else begin
-        tx_busy_reg <= (tx_state != TX_IDLE);
-        
         case (tx_state)
             TX_IDLE: begin
-                tx_out_reg <= 1'b1;
+                tx_out_reg <= 1'b1;  // Línea en reposo
                 if (tx_start) begin
-                    // FIX: Stop bit duration depends ONLY on ctrl_word[4]
-                    tx_stop_duration <= (ctrl_word[4]) ? 32 : 16;
+                    // Calcular parámetros
+                    tx_stop_duration <= (ctrl_word[4]) ? 
+                        ((ctrl_word[1:0] == 2'b11) ? 24 : 32) : 16;
                     
-                    if (~ctrl_word[3]) begin
-                        tx_parity_bit <= ctrl_word[2] ? ^tx_data : ~^tx_data;
+                    // Calcular paridad
+                    if (~ctrl_word[3]) begin // NPB=0: paridad habilitada
+                        if (ctrl_word[2]) // POE=1: paridad par
+                            tx_parity_bit <= ^tx_data;
+                        else // POE=0: paridad impar
+                            tx_parity_bit <= ~^tx_data;
                     end
                     
                     tx_shift_reg <= tx_data;
@@ -150,28 +160,34 @@ always @(posedge clk or posedge rst) begin
             end
             
             TX_START: begin
-                tx_out_reg <= 1'b0;
-                if (baud16_en && tx_cycle_count < 15) begin
-                    tx_cycle_count <= tx_cycle_count + 1;
-                end else if (baud16_en) begin
-                    tx_cycle_count <= 0;
-                    tx_state <= TX_DATA;
-                    tx_bit_count <= 0;
+                tx_out_reg <= 1'b0;  // Bit de inicio
+                if (baud16_en) begin
+                    if (tx_cycle_count < 15)
+                        tx_cycle_count <= tx_cycle_count + 1;
+                    else begin
+                        tx_cycle_count <= 0;
+                        tx_state <= TX_DATA;
+                        tx_bit_count <= 0;
+                    end
                 end
             end
             
             TX_DATA: begin
-                tx_out_reg <= tx_shift_reg[0];
+                tx_out_reg <= tx_shift_reg[0];  // Envía LSB primero
                 if (baud16_en) begin
                     if (tx_cycle_count < 15) begin
                         tx_cycle_count <= tx_cycle_count + 1;
                     end else begin
                         tx_cycle_count <= 0;
-                        tx_shift_reg <= tx_shift_reg >> 1;
+                        tx_shift_reg <= tx_shift_reg >> 1; // Desplaza
                         tx_bit_count <= tx_bit_count + 1;
                         
+                        // Verificar fin de datos
                         if (tx_bit_count == (ctrl_word[1:0] + 4)) begin
-                            tx_state <= ctrl_word[3] ? TX_STOP : TX_PARITY;
+                            if (~ctrl_word[3]) // Si hay paridad
+                                tx_state <= TX_PARITY;
+                            else
+                                tx_state <= TX_STOP;
                         end
                     end
                 end
@@ -179,28 +195,37 @@ always @(posedge clk or posedge rst) begin
             
             TX_PARITY: begin
                 tx_out_reg <= tx_parity_bit;
-                if (baud16_en && tx_cycle_count < 15) begin
-                    tx_cycle_count <= tx_cycle_count + 1;
-                end else if (baud16_en) begin
-                    tx_cycle_count <= 0;
-                    tx_state <= TX_STOP;
+                if (baud16_en) begin
+                    if (tx_cycle_count < 15)
+                        tx_cycle_count <= tx_cycle_count + 1;
+                    else begin
+                        tx_cycle_count <= 0;
+                        tx_state <= TX_STOP;
+                    end
                 end
             end
             
             TX_STOP: begin
-                tx_out_reg <= 1'b1;
-                if (baud16_en && (tx_cycle_count < tx_stop_duration - 1)) begin
-                    tx_cycle_count <= tx_cycle_count + 1;
-                end else if (baud16_en) begin
-                    tx_cycle_count <= 0;
-                    tx_state <= TX_IDLE;
+                tx_out_reg <= 1'b1;  // Bit de parada
+                if (baud16_en) begin
+                    if (tx_cycle_count < tx_stop_duration - 1)
+                        tx_cycle_count <= tx_cycle_count + 1;
+                    else begin
+                        tx_cycle_count <= 0;
+                        tx_state <= TX_IDLE;
+                    end
                 end
             end
         endcase
     end
 end
 
-// Receiver FSM
+assign tx_busy = (tx_state != TX_IDLE);
+assign tx_out = tx_out_reg;
+
+// ================================================
+// Lógica del receptor
+// ================================================
 always @(posedge clk or posedge rst) begin
     if (rst) begin
         rx_state <= RX_IDLE;
@@ -210,19 +235,15 @@ always @(posedge clk or posedge rst) begin
         rx_in_prev <= 1'b1;
         frame_error <= 0;
         parity_error <= 0;
-        rx_error_reg <= 0;
-        rx_data_reg <= 0;
-        rx_shift_reg <= 8'b0;          // Reset added
     end else begin
-        rx_ready_reg <= 0;
-        rx_error_reg <= 0;
-        rx_in_prev <= rx_in;
+        rx_ready_reg <= 0;  // Resetear pulso de dato listo
+        rx_in_prev <= rx_in; // Almacenar valor previo
         
         case (rx_state)
             RX_IDLE: begin
-                if (rx_in_prev && !rx_in) begin
+                if (rx_in_prev && !rx_in) begin  // Detección flanco de bajada
                     rx_state <= START_CHECK;
-                    rx_cycle_count <= 7;
+                    rx_cycle_count <= 7;  // Muestrear en mitad del bit de inicio
                 end
             end
             
@@ -231,9 +252,13 @@ always @(posedge clk or posedge rst) begin
                     if (rx_cycle_count > 0) begin
                         rx_cycle_count <= rx_cycle_count - 1;
                     end else begin
-                        rx_state <= !rx_in ? RX_DATA : RX_IDLE;
-                        rx_cycle_count <= 0;
-                        rx_bit_count <= 0;
+                        if (!rx_in) begin  // Bit de inicio válido
+                            rx_state <= RX_DATA;
+                            rx_cycle_count <= 0;
+                            rx_bit_count <= 0;
+                        end else begin
+                            rx_state <= RX_IDLE;
+                        end
                     end
                 end
             end
@@ -242,17 +267,21 @@ always @(posedge clk or posedge rst) begin
                 if (baud16_en) begin
                     rx_cycle_count <= rx_cycle_count + 1;
                     
-                    // FIX: Left-shift for correct byte alignment
+                    // Muestrear en el centro del bit (ciclo 8)
                     if (rx_cycle_count == 8) begin
-                        rx_shift_reg <= {rx_shift_reg[6:0], rx_in};
+                        rx_shift_reg <= {rx_in, rx_shift_reg[7:1]}; // Shift right
                     end
                     
                     if (rx_cycle_count == 15) begin
                         rx_cycle_count <= 0;
                         rx_bit_count <= rx_bit_count + 1;
                         
+                        // Verificar fin de datos
                         if (rx_bit_count == (ctrl_word[1:0] + 4)) begin
-                            rx_state <= ctrl_word[3] ? RX_STOP : RX_PARITY;
+                            if (~ctrl_word[3]) // Si hay paridad
+                                rx_state <= RX_PARITY;
+                            else
+                                rx_state <= RX_STOP;
                         end
                     end
                 end
@@ -263,12 +292,13 @@ always @(posedge clk or posedge rst) begin
                     rx_cycle_count <= rx_cycle_count + 1;
                     
                     if (rx_cycle_count == 8) begin
-                        if (~ctrl_word[3]) begin // Parity enabled
-                            if (ctrl_word[2]) begin // Even parity
-                                parity_error <= (^rx_shift_reg != rx_in);
-                            end else begin       // Odd parity
-                                parity_error <= (~^rx_shift_reg != rx_in);
-                            end
+                        // Verificar paridad
+                        if (ctrl_word[2]) begin // POE=1: Paridad par
+                            if (^rx_shift_reg != rx_in) 
+                                parity_error <= 1;
+                        end else begin // POE=0: Paridad impar
+                            if (~^rx_shift_reg != rx_in)
+                                parity_error <= 1;
                         end
                     end
                     
@@ -284,14 +314,15 @@ always @(posedge clk or posedge rst) begin
                     rx_cycle_count <= rx_cycle_count + 1;
                     
                     if (rx_cycle_count == 8) begin
-                        frame_error <= !rx_in; // Stop bit should be high
+                        if (!rx_in)  // Bit de parada debe ser 1
+                            frame_error <= 1;
                     end
                     
                     if (rx_cycle_count == 15) begin
                         rx_data_reg <= rx_shift_reg;
                         rx_ready_reg <= 1'b1;
-                        rx_error_reg <= frame_error | parity_error;
                         rx_state <= RX_IDLE;
+                        // Reset errores para siguiente byte
                         frame_error <= 0;
                         parity_error <= 0;
                     end
@@ -300,5 +331,9 @@ always @(posedge clk or posedge rst) begin
         endcase
     end
 end
+
+assign rx_data = rx_data_reg;
+assign rx_ready = rx_ready_reg;
+assign rx_error = frame_error | parity_error;
 
 endmodule
